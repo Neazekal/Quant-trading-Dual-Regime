@@ -1,105 +1,16 @@
 import ccxt
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import Optional
 from pathlib import Path
 from tqdm import tqdm
-import json
 
 # ==================== LOGGING SETUP ====================
-def setup_logging(log_file: str = "binance_fetch.log"):
-    """Configure logging for data fetch process"""
-    logger = logging.getLogger("BinanceFetcher")
-    logger.setLevel(logging.INFO)
-    
-    if logger.hasHandlers():
-        logger.handlers.clear()
-    
-    # File handler
-    fh = logging.FileHandler(log_file)
-    fh.setLevel(logging.INFO)
-    
-    # Console handler
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.WARNING)
-    
-    # Formatter
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    fh.setFormatter(formatter)
-    ch.setFormatter(formatter)
-    
-    logger.addHandler(fh)
-    logger.addHandler(ch)
-    
-    return logger
-
-logger = setup_logging()
-
-# ==================== RATE LIMIT CALCULATOR ====================
-class RateLimitManager:
-    """Manage rate limit by weight of Binance Futures API"""
-    
-    # Default weights for endpoints
-    WEIGHTS = {
-        'klines': {1: 1, 5: 1, 10: 1, 20: 1, 50: 1, 100: 1, 500: 5, 1000: 10},
-        'funding_rate': 1,  # For fetching funding rate history
-    }
-    
-    # Rate limit restrictions (80% of 2400 for safety)
-    MAX_WEIGHT_PER_MINUTE = 1920
-    MINUTES_WINDOW = 1
-    
-    def __init__(self):
-        self.request_weights = []
-        self.request_times = []
-        self.last_request_time = 0
-    
-    def calculate_weight(self, limit: int, endpoint: str = 'klines') -> int:
-        """Calculate weight of request based on limit"""
-        if endpoint == 'klines':
-            weights = self.WEIGHTS['klines']
-            return weights.get(limit, 10)
-        elif endpoint == 'funding_rate':
-            return self.WEIGHTS['funding_rate']
-        return 1
-    
-    def get_wait_time(self, weight: int) -> float:
-        """Calculate wait time (seconds) based on weight"""
-        # Formula: (weight / 1920) * 60 seconds
-        wait_seconds = (weight / self.MAX_WEIGHT_PER_MINUTE) * 60
-        return wait_seconds
-    
-    def should_wait(self, weight: int) -> Tuple[bool, float]:
-        """Check if should wait before sending request"""
-        current_time = time.time()
-        
-        # Remove requests older than 1 minute
-        cutoff_time = current_time - 60
-        self.request_weights = [
-            w for t, w in zip(self.request_times, self.request_weights)
-            if t > cutoff_time
-        ]
-        self.request_times = [t for t in self.request_times if t > cutoff_time]
-        
-        # Calculate total weight in 1-minute window
-        total_weight = sum(self.request_weights)
-        
-        if total_weight + weight > self.MAX_WEIGHT_PER_MINUTE:
-            wait_time = self.get_wait_time(weight)
-            return True, wait_time
-        
-        return False, 0
-    
-    def record_request(self, weight: int):
-        """Record request for rate limit tracking"""
-        self.request_times.append(time.time())
-        self.request_weights.append(weight)
-        self.last_request_time = time.time()
+logger = logging.getLogger("BinanceFetcher")
+logger.addHandler(logging.NullHandler())
+logger.disabled = True
 
 # ==================== DATA MERGER ====================
 class DataMerger:
@@ -195,9 +106,7 @@ class BinanceFuturesFetcher:
             exchange_config['secret'] = api_secret
         
         self.exchange = ccxt.binance(exchange_config)
-        self.rate_limit_manager = RateLimitManager()
         self.data_merger = DataMerger()
-        self.fetch_history = []
         self.ohlcv_data = None
         self.funding_data = None
         self.merged_data = None
@@ -253,11 +162,6 @@ class BinanceFuturesFetcher:
         try:
             while current_time < end_date:
                 try:
-                    # Calculate weight
-                    weight = self.rate_limit_manager.calculate_weight(limit)
-                    
-                    logger.debug(f"Request weight: {weight}")
-                    
                     # Fetch data
                     candles = self.exchange.fetch_ohlcv(
                         symbol,
@@ -274,17 +178,6 @@ class BinanceFuturesFetcher:
                     # Update time for next request
                     last_candle_time = candles[-1][0]
                     current_time = datetime.fromtimestamp(last_candle_time / 1000)
-                    
-                    # Record request
-                    self.rate_limit_manager.record_request(weight)
-                    self.fetch_history.append({
-                        'timestamp': datetime.now(),
-                        'symbol': symbol,
-                        'type': 'ohlcv',
-                        'timeframe': timeframe,
-                        'candles_fetched': len(candles),
-                        'weight': weight
-                    })
                     
                     pbar.update(1)
                     
@@ -384,20 +277,6 @@ class BinanceFuturesFetcher:
                     # Update time
                     last_rate_time = rates[-1]['timestamp']
                     current_time = datetime.fromtimestamp(last_rate_time / 1000)
-                    
-                    # Record request
-                    weight = self.rate_limit_manager.calculate_weight(
-                        limit,
-                        endpoint='funding_rate'
-                    )
-                    self.rate_limit_manager.record_request(weight)
-                    self.fetch_history.append({
-                        'timestamp': datetime.now(),
-                        'symbol': symbol,
-                        'type': 'funding_rate',
-                        'rates_fetched': len(rates),
-                        'weight': weight
-                    })
                     
                     pbar.update(1)
                     
@@ -589,39 +468,6 @@ class BinanceFuturesFetcher:
         }
         return timeframe_map.get(timeframe, 5 * 60 * 1000)
     
-    def get_fetch_stats(self) -> Dict:
-        """Get statistics about requests made"""
-        if not self.fetch_history:
-            return {}
-        
-        total_weight = sum(h.get('weight', 0) for h in self.fetch_history)
-        total_requests = len(self.fetch_history)
-        total_candles = sum(h.get('candles_fetched', 0) for h in self.fetch_history)
-        total_rates = sum(h.get('rates_fetched', 0) for h in self.fetch_history)
-        
-        return {
-            'total_requests': total_requests,
-            'total_weight': total_weight,
-            'average_weight_per_request': total_weight / total_requests if total_requests > 0 else 0,
-            'total_candles': total_candles,
-            'total_funding_rates': total_rates,
-            'merged_rows': len(self.merged_data) if self.merged_data is not None else 0,
-        }
-    
-    def save_fetch_history(self, filepath: str = "fetch_history.json"):
-        """Save fetch history to JSON file"""
-        history = [
-            {
-                **h,
-                'timestamp': h['timestamp'].isoformat()
-            }
-            for h in self.fetch_history
-        ]
-        
-        with open(filepath, 'w') as f:
-            json.dump(history, f, indent=2)
-        
-        logger.info(f"Fetch history saved to {filepath}")
 
 # ==================== MAIN USAGE ====================
 def main():
@@ -659,19 +505,5 @@ def main():
         print(f"  Max: {merged_df['fundingRate'].max():.10f}")
         print(f"  Mean: {merged_df['fundingRate'].mean():.10f}")
     
-    # Display statistics
-    stats = fetcher.get_fetch_stats()
-    print("\n" + "=" * 100)
-    print("FETCH STATISTICS:")
-    print("=" * 100)
-    for key, value in stats.items():
-        if isinstance(value, float):
-            print(f"{key:35s}: {value:,.2f}")
-        else:
-            print(f"{key:35s}: {value:,}")
-    
-    # Save fetch history
-    fetcher.save_fetch_history()
-
 if __name__ == '__main__':
     main()
