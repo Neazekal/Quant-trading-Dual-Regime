@@ -505,5 +505,4 @@ def main():
         print(f"  Max: {merged_df['fundingRate'].max():.10f}")
         print(f"  Mean: {merged_df['fundingRate'].mean():.10f}")
     
-if __name__ == '__main__':
-    main()
+
