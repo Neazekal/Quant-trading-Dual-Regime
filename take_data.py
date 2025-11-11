@@ -219,3 +219,108 @@ class BinanceFuturesFetcher:
         else:
             logger.warning(f"No data fetched for {symbol}")
             return pd.DataFrame()
+    
+    def fetch_funding_rates(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        limit: int = 100
+    ) -> pd.DataFrame:
+        """
+        Fetch Funding Rate data from Binance Futures
+        
+        Args:
+            symbol: Trading pair (e.g., 'SOL/USDT')
+            start_date: Start date
+            end_date: End date
+            limit: Max number of records per request
+        
+        Returns:
+            DataFrame with columns: timestamp, fundingRate
+        """
+        symbol = self.get_symbol_pair(symbol)
+        limit = min(max(limit, 1), 1000)
+        
+        all_rates = []
+        current_time = start_date
+        
+        # Calculate number of requests needed
+        total_hours = (end_date - start_date).total_seconds() / 3600
+        total_requests = int(total_hours / 3) + 1
+        
+        logger.info(f"Fetching funding rates for {symbol} from {start_date} to {end_date}")
+        logger.info(f"Estimated requests: {total_requests}")
+        
+        pbar = tqdm(
+            total=total_requests,
+            desc=f"Fetching Funding Rates {symbol}",
+            unit="request",
+            ncols=100
+        )
+        
+        try:
+            while current_time < end_date:
+                try:
+                    # Call funding rate history API
+                    rates = self.exchange.fetch_funding_rate_history(
+                        symbol,
+                        since=int(current_time.timestamp() * 1000),
+                        limit=limit
+                    )
+                    
+                    if not rates:
+                        break
+                    
+                    all_rates.extend(rates)
+                    
+                    # Update time
+                    last_rate_time = rates[-1]['timestamp']
+                    current_time = datetime.fromtimestamp(last_rate_time / 1000)
+                    
+                    pbar.update(1)
+                    
+                    if current_time >= end_date:
+                        break
+                
+                except ccxt.NetworkError as e:
+                    logger.error(f"Network error: {e}. Retrying in 5s...")
+                    time.sleep(5)
+                except ccxt.ExchangeError as e:
+                    logger.error(f"Exchange error: {e}. Stopping fetch")
+                    break
+        
+        finally:
+            pbar.close()
+        
+        # Convert to DataFrame
+        if all_rates:
+            df = pd.DataFrame([
+                {
+                    'timestamp': datetime.fromtimestamp(r['timestamp'] / 1000),
+                    'fundingRate': r['fundingRate']
+                }
+                for r in all_rates
+            ])
+            
+            # Filter data in requested date range
+            df = df[
+                (df['timestamp'] >= start_date) &
+                (df['timestamp'] <= end_date)
+            ].reset_index(drop=True)
+            
+            # Remove duplicates, keep last
+            df = df.drop_duplicates(subset=['timestamp'], keep='last')
+            
+            self.funding_data = df
+            
+            logger.info(
+                f"Successfully fetched {len(df)} funding rates for {symbol}"
+            )
+            
+            return df
+        else:
+            logger.warning(f"No funding rate data fetched for {symbol}")
+            return pd.DataFrame()
+    
+    
