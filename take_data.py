@@ -6,6 +6,8 @@ import logging
 from typing import Optional
 from pathlib import Path
 from tqdm import tqdm
+import argparse
+from datetime import datetime
 
 # ==================== LOGGING SETUP ====================
 logger = logging.getLogger("BinanceFetcher")
@@ -439,7 +441,7 @@ class BinanceFuturesFetcher:
         logger.info("\n[STEP 4/4] Saving merged data...")
         if output_file is None:
             symbol_clean = symbol.replace('/', '')
-            output_file = f"data/{symbol_clean}_{timeframe}_merged_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
+            output_file = f"data/raw_data/{symbol_clean}_{timeframe}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
         
         # Create data directory if not exists
         Path(output_file).parent.mkdir(parents=True, exist_ok=True)
@@ -471,39 +473,37 @@ class BinanceFuturesFetcher:
 
 # ==================== MAIN USAGE ====================
 def main():
-    """Example usage"""
-    
-    # Initialize fetcher
+    parser = argparse.ArgumentParser(description="Fetch and merge Binance Futures OHLCV + Funding Rate")
+    parser.add_argument("--symbol", required=True, help="Trading pair, e.g. DOGE/USDT")
+    parser.add_argument("--start", required=True, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end", required=True, help="End date (YYYY-MM-DD)")
+    parser.add_argument("--timeframe", default="5m", help="Timeframe, default 5m")
+    parser.add_argument("--limit", type=int, default=1000, help="OHLCV fetch limit")
+    parser.add_argument("--fill", default="ffill", choices=["ffill","bfill","interpolate"], help="Fill method")
+    parser.add_argument("--out", default=None, help="Output file path")
+
+    args = parser.parse_args()
+
+    start_date = datetime.strptime(args.start, "%Y-%m-%d")
+    end_date = datetime.strptime(args.end, "%Y-%m-%d")
+
     fetcher = BinanceFuturesFetcher()
-    
-    # Set date/time
-    start_date = datetime(2024, 1, 1)
-    end_date = datetime(2025, 1, 10)
-    
-    # Fetch, merge, and save in one command
     merged_df = fetcher.fetch_and_merge(
-        symbol='DOGE/USDT',
+        symbol=args.symbol,
         start_date=start_date,
         end_date=end_date,
-        timeframe='5m',
-        limit=1000,
-        output_file='data/DOGEUSDT_5m_merged_20250101_20250110.csv',
-        fill_method='ffill'
+        timeframe=args.timeframe,
+        limit=args.limit,
+        output_file=args.out,
+        fill_method=args.fill
     )
-    
-    # Display results
+
     if not merged_df.empty:
-        print("\n" + "=" * 100)
-        print("MERGED DATA PREVIEW:")
-        print("=" * 100)
-        print(merged_df.head(10))
-        print(f"\nShape: {merged_df.shape}")
-        print(f"Columns: {list(merged_df.columns)}")
-        print(f"Date range: {merged_df['timestamp'].min()} to {merged_df['timestamp'].max()}")
-        print(f"\nFunding Rate Statistics:")
-        print(f"  Min: {merged_df['fundingRate'].min():.10f}")
-        print(f"  Max: {merged_df['fundingRate'].max():.10f}")
-        print(f"  Mean: {merged_df['fundingRate'].mean():.10f}")
+        print(merged_df.head())
+        print(f"\nSaved data: {args.out or 'auto-generated path'}")
+
+if __name__ == "__main__":
+    main()
     
 if __name__ == '__main__':
     main()
