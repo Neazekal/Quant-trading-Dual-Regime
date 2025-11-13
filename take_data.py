@@ -441,7 +441,8 @@ class BinanceFuturesFetcher:
         logger.info("\n[STEP 4/4] Saving merged data...")
         if output_file is None:
             symbol_clean = symbol.replace('/', '')
-            output_file = f"data/raw_data/{symbol_clean}_{timeframe}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
+            coin_name = symbol_clean[:-4] if symbol_clean.endswith('USDT') else symbol_clean
+            output_file = f"data/raw_data/{coin_name}/{timeframe}/{coin_name}_{timeframe}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
         
         # Create data directory if not exists
         Path(output_file).parent.mkdir(parents=True, exist_ok=True)
@@ -503,7 +504,4 @@ def main():
         print(f"\nSaved data: {args.out or 'auto-generated path'}")
 
 if __name__ == "__main__":
-    main()
-    
-if __name__ == '__main__':
     main()
