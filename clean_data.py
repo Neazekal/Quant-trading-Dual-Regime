@@ -137,7 +137,7 @@ def auto_output_path(input_file: Path) -> Path:
     symbol = parts[0]           
     timeframe = parts[1]        
 
-    outdir = Path("data") / "clean" / symbol / timeframe
+    outdir = Path("data") / "cleaned_data" / symbol / timeframe
     outdir.mkdir(parents=True, exist_ok=True)
 
     return outdir / (stem + "_clean")
