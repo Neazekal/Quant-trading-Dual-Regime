@@ -20,6 +20,7 @@ DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "atr": {"length": [14]},
     "er": {"length": [10]},
     "vhf": {"length": [14, 28]},
+    "kama_volatility": {"length": [10]},
 }
 
 
@@ -83,6 +84,63 @@ def compute_vhf(
     vhf = price_range / volatility
     vhf.name = f"vhf_{period}"
     return vhf
+
+
+def compute_cvi(
+    df: pd.DataFrame,
+    close_col: str = "close",
+    period: int = 10,
+) -> pd.Series:
+    """
+    Compute Chande Volatility Index (CVI).
+
+    numerator   = EMA(|close - close.shift(1)|, period)
+    denominator = EMA(close.shift(1), period)
+    CVI         = 100 * numerator / denominator
+
+    Returns Series named cvi_{period} aligned to df.index; insufficient data -> NaN.
+    """
+    if close_col not in df.columns:
+        raise KeyError(f"compute_cvi requires column '{close_col}'")
+    if period <= 0:
+        raise ValueError("period must be positive")
+
+    close = df[close_col]
+    abs_change = (close - close.shift(1)).abs()
+
+    numerator = abs_change.ewm(span=period, adjust=False).mean()
+    denominator = close.shift(1).ewm(span=period, adjust=False).mean()
+
+    cvi = 100 * numerator / denominator
+    cvi = cvi.where(denominator != 0)
+    cvi.name = f"cvi_{period}"
+    return cvi
+
+
+def compute_kama_volatility(
+    df: pd.DataFrame,
+    close_col: str = "close",
+    period: int = 10,
+) -> pd.Series:
+    """
+    Compute KAMA-based volatility (Perry Kaufman's volatility component).
+
+    Volatility is the sum of absolute price changes over a period:
+    vol_n = Σ |close_i - close_{i-1}| for i in [n-period+1, n]
+
+    Returns a Series aligned to df.index; insufficient lookback yields NaN.
+    """
+    if close_col not in df.columns:
+        raise KeyError(f"compute_kama_volatility requires column '{close_col}'")
+    if period <= 0:
+        raise ValueError("period must be positive")
+
+    price = df[close_col]
+    price_changes = price.diff().abs()
+    volatility = price_changes.rolling(window=period, min_periods=period).sum()
+
+    volatility.name = f"kama_vol_{period}"
+    return volatility
 
 
 # -------- Small utilities --------
@@ -201,6 +259,12 @@ def generate_features(
         _require_columns(out, ["high", "low", "close"], "VHF")
         for length in [int(x) for x in _as_seq(params["vhf"].get("length", 28))]:
             out[f"vhf_{length}"] = compute_vhf(out, period=int(length))
+
+    # KAMA-based Volatility
+    if "kama_volatility" in params:
+        _require_columns(out, ["close"], "KAMA Volatility")
+        for length in [int(x) for x in _as_seq(params["kama_volatility"].get("length", 10))]:
+            out[f"kama_vol_{length}"] = compute_kama_volatility(out, close_col="close", period=int(length))
 
     # optional anti-lookahead
     if shift:
