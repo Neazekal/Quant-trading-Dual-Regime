@@ -19,6 +19,7 @@ DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "adx": {"length": [14, 28]},
     "atr": {"length": [14]},
     "er": {"length": [10]},
+    "vhf": {"length": [14, 28]},
 }
 
 
@@ -46,6 +47,42 @@ def compute_er(df: pd.DataFrame, price_col: str = "close", period: int = 10) -> 
     er = net_change / volatility
     er.name = f"er_{period}"
     return er
+
+
+def compute_vhf(
+    df: pd.DataFrame,
+    high_col: str = "high",
+    low_col: str = "low",
+    close_col: str = "close",
+    period: int = 28,
+) -> pd.Series:
+    """
+    Compute Vertical Horizontal Filter (VHF).
+
+    VHF_n = (max_high_{n-period+1..n} - min_low_{n-period+1..n}) /
+            sum_{i=n-period+1..n} |close_i - close_{i-1}|
+
+    Returns a Series aligned to df.index; insufficient lookback yields NaN.
+    """
+    for col, name in zip((high_col, low_col, close_col), ("high", "low", "close")):
+        if col not in df.columns:
+            raise KeyError(f"compute_vhf requires column '{col}' for {name}")
+    if period <= 0:
+        raise ValueError("period must be positive")
+
+    high = df[high_col]
+    low = df[low_col]
+    close = df[close_col]
+
+    highest_high = high.rolling(window=period, min_periods=period).max()
+    lowest_low = low.rolling(window=period, min_periods=period).min()
+    price_range = highest_high - lowest_low
+
+    volatility = close.diff().abs().rolling(window=period, min_periods=period).sum()
+
+    vhf = price_range / volatility
+    vhf.name = f"vhf_{period}"
+    return vhf
 
 
 # -------- Small utilities --------
@@ -158,6 +195,12 @@ def generate_features(
         _require_columns(out, ["close"], "ER")
         for length in [int(x) for x in _as_seq(params["er"].get("length", 10))]:
             out[f"er_{length}"] = compute_er(out, price_col="close", period=int(length))
+
+    # Vertical Horizontal Filter
+    if "vhf" in params:
+        _require_columns(out, ["high", "low", "close"], "VHF")
+        for length in [int(x) for x in _as_seq(params["vhf"].get("length", 28))]:
+            out[f"vhf_{length}"] = compute_vhf(out, period=int(length))
 
     # optional anti-lookahead
     if shift:
