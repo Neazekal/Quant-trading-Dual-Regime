@@ -125,7 +125,7 @@ def save_data(df: pd.DataFrame, out_prefix: Path | str) -> None:
     export_df.index.name = "timestamp"
 
     export_df.to_parquet(f"{out_prefix}.parquet")
-    export_df.to_csv(f"{out_prefix}.csv", index_label="timestamp")
+    # export_df.to_csv(f"{out_prefix}.csv", index_label="timestamp")
     
 def auto_output_path(input_file: Path) -> Path:
     stem = input_file.stem  # DOGE_5m_20240101_20251112
@@ -171,7 +171,7 @@ def main():
     save_data(df_enriched, out_prefix)
 
     print(f"Saved:")
-    print(f"  {out_prefix}_clean.csv")
+    # print(f"  {out_prefix}_clean.csv")
     print(f"  {out_prefix}_clean.parquet")
 
 
