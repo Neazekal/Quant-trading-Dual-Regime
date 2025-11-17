@@ -18,11 +18,34 @@ DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "ema_slow": {"length": [50, 100]},
     "adx": {"length": [14, 28]},
     "atr": {"length": [14]},
+    "er": {"length": [10]},
 }
 
 
 def _as_seq(x) -> list:
     return list(x) if isinstance(x, (list, tuple, range, pd.Index)) else [x]
+
+
+def compute_er(df: pd.DataFrame, price_col: str = "close", period: int = 10) -> pd.Series:
+    """
+    Compute Perry Kaufman's Efficiency Ratio (ER).
+
+    ER_n = |price_n - price_{n-period}| / sum_{i=n-period+1..n} |price_i - price_{i-1}|
+
+    Returns a Series aligned to df.index; insufficient lookback yields NaN.
+    """
+    if price_col not in df.columns:
+        raise KeyError(f"compute_er requires column '{price_col}'")
+    if period <= 0:
+        raise ValueError("period must be positive")
+
+    price = df[price_col]
+    net_change = price.diff(periods=period).abs()
+    volatility = price.diff().abs().rolling(window=period).sum()
+
+    er = net_change / volatility
+    er.name = f"er_{period}"
+    return er
 
 
 # -------- Small utilities --------
@@ -129,6 +152,12 @@ def generate_features(
         _require_columns(out, ["high", "low", "close"], "ATR")
         for length in [int(x) for x in _as_seq(params["atr"].get("length", 14))]:
             out[f"atr_{length}"] = ta.atr(high=out["high"], low=out["low"], close=out["close"], length=length)
+
+    # Efficiency Ratio (Perry Kaufman)
+    if "er" in params:
+        _require_columns(out, ["close"], "ER")
+        for length in [int(x) for x in _as_seq(params["er"].get("length", 10))]:
+            out[f"er_{length}"] = compute_er(out, price_col="close", period=int(length))
 
     # optional anti-lookahead
     if shift:
