@@ -12,17 +12,37 @@ import pandas_ta as ta
 
 # -------- Default indicator parameters --------
 DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
-    "rsi": {"length": [7, 14, 21]},
+    # =========================================================================
+    # STRATEGY 1: Dual-Regime Mean Reversion
+    # =========================================================================
+    
+    # --- Regime Detection ---
+    "adx": {"length": [14]},          # Strength of trend
+    "er": {"length": [10]},           # Efficiency Ratio
+    "vhf": {"length": [14, 28]},      # Vertical Horizontal Filter
+
+    # --- Entry/Exit & Noise Filter ---
     "bbands": {"length": [20, 40], "std": [1.5, 2.0, 2.5]},
+    "rsi": {"length": [7, 14, 21]},
     "ema_fast": {"length": [10, 20]},
     "ema_slow": {"length": [50, 100]},
-    "adx": {"length": [14, 28]},
+
+    # --- SL/TP (Risk Management/Volatility) ---
     "atr": {"length": [14]},
-    "er": {"length": [10]},
-    "vhf": {"length": [14, 28]},
     "cvi": {"length": [10]},
     "kama_volatility": {"length": [10]},
+
+    # =========================================================================
+    # STRATEGY 2: SuperTrend + MACD + StochRSI (5m)
+    # =========================================================================
+    
+    # --- Trend ---
     "supertrend": {"length": [10], "multiplier": [2.0]},
+    
+    # --- Momentum ---
+    "macd": {"fast": [12], "slow": [26], "signal": [9]},
+    
+    # --- Timing ---
     "stochrsi": {"length": [14], "rsi_length": [14], "k": [3], "d": [3]},
 }
 
@@ -249,6 +269,61 @@ def compute_stochrsi(
     return out
 
 
+def compute_macd(
+    df: pd.DataFrame,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> pd.DataFrame:
+    """
+    Compute MACD (Moving Average Convergence Divergence).
+
+    Returns a DataFrame with columns:
+      macd_line
+      macd_signal
+      macd_hist
+    
+    Aligned to df.index.
+    """
+    _require_columns(df, ["close"], "MACD")
+    
+    # pandas_ta.macd returns a DataFrame with columns like:
+    # MACD_{fast}_{slow}_{signal}       (Line)
+    # MACDh_{fast}_{slow}_{signal}      (Histogram)
+    # MACDs_{fast}_{slow}_{signal}      (Signal)
+    macd = ta.macd(
+        close=df["close"],
+        fast=fast,
+        slow=slow,
+        signal=signal
+    )
+    
+    if macd is None or macd.empty:
+        return pd.DataFrame(
+            {
+                "macd_line": [float("nan")] * len(df),
+                "macd_signal": [float("nan")] * len(df),
+                "macd_hist": [float("nan")] * len(df)
+            },
+            index=df.index
+        )
+
+    out = pd.DataFrame(index=df.index)
+    # pandas_ta returns:
+    # Column 0: MACD line
+    # Column 1: Histogram
+    # Column 2: Signal line
+    # Note: The order in pandas_ta output for macd is usually: MACD (line), MACDh (hist), MACDs (signal)
+    # Let's verify by column names if possible, but standard pandas_ta behavior is consistent.
+    # To be safe, we can map by suffix if needed, but positional is standard for this lib.
+    
+    out["macd_line"] = macd.iloc[:, 0]
+    out["macd_hist"] = macd.iloc[:, 1]
+    out["macd_signal"] = macd.iloc[:, 2]
+    
+    return out
+
+
 # -------- Small utilities --------
 def _require_columns(df: pd.DataFrame, cols: Iterable[str], name: str) -> None:
     """Raise a clear error if required columns are missing."""
@@ -303,6 +378,11 @@ def generate_features(
     """
     out = df.copy()
 
+    # =========================================================================
+    # STRATEGY 1: Dual-Regime Mean Reversion
+    # =========================================================================
+
+    # --- Regime Detection ---
     # ADX
     if "adx" in params:
         _require_columns(out, ["high", "low", "close"], "ADX")
@@ -311,14 +391,20 @@ def generate_features(
             adx_df = ta.adx(high=out["high"], low=out["low"], close=out["close"], length=length)
             out[f"adx_{length}"] = adx_df[f"ADX_{length}"]
 
-    # RSI
-    if "rsi" in params:
-        _require_columns(out, ["close"], "RSI")
-        for length in _as_seq(params["rsi"].get("length", 14)):
-            length = int(length)
-            out[f"rsi_{length}"] = ta.rsi(close=out["close"], length=length)
+    # Efficiency Ratio (Perry Kaufman)
+    if "er" in params:
+        _require_columns(out, ["close"], "ER")
+        for length in [int(x) for x in _as_seq(params["er"].get("length", 10))]:
+            out[f"er_{length}"] = compute_er(out, price_col="close", period=int(length))
 
-    # Bollinger Bands: iterate every (length, std) combination
+    # Vertical Horizontal Filter
+    if "vhf" in params:
+        _require_columns(out, ["high", "low", "close"], "VHF")
+        for length in [int(x) for x in _as_seq(params["vhf"].get("length", 28))]:
+            out[f"vhf_{length}"] = compute_vhf(out, period=int(length))
+
+    # --- Entry/Exit & Noise Filter ---
+    # Bollinger Bands
     if "bbands" in params:
         _require_columns(out, ["close"], "BBANDS")
         lengths = [int(x) for x in _as_seq(params["bbands"].get("length", 20))]
@@ -332,6 +418,13 @@ def generate_features(
             out[f"bb_upper_{length}_{std}"]  = bb[prefix_map["BBU"]]
             out[f"bb_middle_{length}_{std}"] = bb[prefix_map["BBM"]]
             out[f"bb_lower_{length}_{std}"]  = bb[prefix_map["BBL"]]
+
+    # RSI
+    if "rsi" in params:
+        _require_columns(out, ["close"], "RSI")
+        for length in _as_seq(params["rsi"].get("length", 14)):
+            length = int(length)
+            out[f"rsi_{length}"] = ta.rsi(close=out["close"], length=length)
 
     # EMA fast
     if "ema_fast" in params:
@@ -348,23 +441,12 @@ def generate_features(
             reused = f"ema_fast_{slow_len}"
             out[col_slow] = out[reused] if reused in out.columns else ta.ema(out["close"], length=slow_len)
 
+    # --- SL/TP (Volatility) ---
     # ATR
     if "atr" in params:
         _require_columns(out, ["high", "low", "close"], "ATR")
         for length in [int(x) for x in _as_seq(params["atr"].get("length", 14))]:
             out[f"atr_{length}"] = ta.atr(high=out["high"], low=out["low"], close=out["close"], length=length)
-
-    # Efficiency Ratio (Perry Kaufman)
-    if "er" in params:
-        _require_columns(out, ["close"], "ER")
-        for length in [int(x) for x in _as_seq(params["er"].get("length", 10))]:
-            out[f"er_{length}"] = compute_er(out, price_col="close", period=int(length))
-
-    # Vertical Horizontal Filter
-    if "vhf" in params:
-        _require_columns(out, ["high", "low", "close"], "VHF")
-        for length in [int(x) for x in _as_seq(params["vhf"].get("length", 28))]:
-            out[f"vhf_{length}"] = compute_vhf(out, period=int(length))
 
     # Chande Volatility Index
     if "cvi" in params:
@@ -378,6 +460,11 @@ def generate_features(
         for length in [int(x) for x in _as_seq(params["kama_volatility"].get("length", 10))]:
             out[f"kama_vol_{length}"] = compute_kama_volatility(out, close_col="close", period=int(length))
 
+    # =========================================================================
+    # STRATEGY 2: SuperTrend + MACD + StochRSI (5m)
+    # =========================================================================
+
+    # --- Trend ---
     # SuperTrend
     if "supertrend" in params:
         # _require_columns checked inside compute_supertrend
@@ -389,6 +476,23 @@ def generate_features(
             out[f"supertrend_{length}_{mult}"] = st_df["supertrend"]
             out[f"supertrend_dir_{length}_{mult}"] = st_df["supertrend_dir"]
 
+    # --- Momentum ---
+    # MACD
+    if "macd" in params:
+        _require_columns(out, ["close"], "MACD")
+        fasts = [int(x) for x in _as_seq(params["macd"].get("fast", 12))]
+        slows = [int(x) for x in _as_seq(params["macd"].get("slow", 26))]
+        signals = [int(x) for x in _as_seq(params["macd"].get("signal", 9))]
+        
+        for f, s, sig in product(fasts, slows, signals):
+            m_df = compute_macd(out, fast=f, slow=s, signal=sig)
+            # suffix: _<fast>_<slow>_<signal>
+            suffix = f"{f}_{s}_{sig}"
+            out[f"macd_line_{suffix}"] = m_df["macd_line"]
+            out[f"macd_signal_{suffix}"] = m_df["macd_signal"]
+            out[f"macd_hist_{suffix}"] = m_df["macd_hist"]
+
+    # --- Timing ---
     # StochRSI
     if "stochrsi" in params:
         _require_columns(out, ["close"], "StochRSI")
