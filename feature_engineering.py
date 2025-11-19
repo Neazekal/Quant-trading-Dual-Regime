@@ -20,7 +20,10 @@ DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "atr": {"length": [14]},
     "er": {"length": [10]},
     "vhf": {"length": [14, 28]},
+    "cvi": {"length": [10]},
     "kama_volatility": {"length": [10]},
+    "supertrend": {"length": [10], "multiplier": [2.0]},
+    "stochrsi": {"length": [14], "rsi_length": [14], "k": [3], "d": [3]},
 }
 
 
@@ -143,6 +146,109 @@ def compute_kama_volatility(
     return volatility
 
 
+def compute_supertrend(
+    df: pd.DataFrame,
+    atr_len: int = 10,
+    multiplier: float = 2.0,
+) -> pd.DataFrame:
+    """
+    Compute SuperTrend indicator.
+
+    Returns a DataFrame with columns:
+      supertrend      (the SuperTrend line)
+      supertrend_dir  (trend direction: 1 for bullish, -1 for bearish)
+    
+    Aligned to df.index.
+    """
+    _require_columns(df, ["high", "low", "close"], "SuperTrend")
+    
+    # pandas_ta.supertrend returns a DataFrame with columns like:
+    # SUPERT_{length}_{multiplier} (trend line)
+    # SUPERTd_{length}_{multiplier} (direction: 1 or -1)
+    # SUPERTl_{length}_{multiplier} (long trend)
+    # SUPERTs_{length}_{multiplier} (short trend)
+    st = ta.supertrend(
+        high=df["high"], 
+        low=df["low"], 
+        close=df["close"], 
+        length=atr_len, 
+        multiplier=multiplier
+    )
+    
+    # Identify the correct columns dynamically or by construction
+    # The default naming convention in pandas_ta is:
+    # SUPERT_{length}_{multiplier} -> value
+    # SUPERTd_{length}_{multiplier} -> direction
+    
+    # We can just look for the columns that start with SUPERT and SUPERTd
+    # But to be safe and precise given we know the params:
+    # Note: pandas_ta might format floats with different precision in column names, 
+    # so it's safer to grab by position or partial match if we are sure of the return structure.
+    # ta.supertrend returns 4 columns.
+    # Column 0: Trend Line (SUPERT_...)
+    # Column 1: Direction (SUPERTd_...)
+    # Column 2: Long Line
+    # Column 3: Short Line
+    
+    if st is None or st.empty:
+        # Fallback for insufficient data
+        return pd.DataFrame(
+            {"supertrend": [float("nan")] * len(df), "supertrend_dir": [float("nan")] * len(df)},
+            index=df.index
+        )
+
+    out = pd.DataFrame(index=df.index)
+    out["supertrend"] = st.iloc[:, 0]
+    out["supertrend_dir"] = st.iloc[:, 1]
+    
+    return out
+
+
+def compute_stochrsi(
+    df: pd.DataFrame,
+    rsi_len: int = 14,
+    stoch_len: int = 14,
+    k_len: int = 3,
+    d_len: int = 3,
+) -> pd.DataFrame:
+    """
+    Compute Stochastic RSI.
+
+    Returns a DataFrame with columns:
+      stochrsi_k
+      stochrsi_d
+    
+    Aligned to df.index.
+    """
+    _require_columns(df, ["close"], "StochRSI")
+    
+    # pandas_ta.stochrsi returns a DataFrame with columns like:
+    # STOCHRSIk_{length}_{rsi_length}_{k}_{d}
+    # STOCHRSId_{length}_{rsi_length}_{k}_{d}
+    stoch = ta.stochrsi(
+        close=df["close"],
+        length=stoch_len,
+        rsi_length=rsi_len,
+        k=k_len,
+        d=d_len
+    )
+    
+    if stoch is None or stoch.empty:
+        return pd.DataFrame(
+            {"stochrsi_k": [float("nan")] * len(df), "stochrsi_d": [float("nan")] * len(df)},
+            index=df.index
+        )
+
+    out = pd.DataFrame(index=df.index)
+    # pandas_ta returns K then D usually.
+    # Column 0: K
+    # Column 1: D
+    out["stochrsi_k"] = stoch.iloc[:, 0]
+    out["stochrsi_d"] = stoch.iloc[:, 1]
+    
+    return out
+
+
 # -------- Small utilities --------
 def _require_columns(df: pd.DataFrame, cols: Iterable[str], name: str) -> None:
     """Raise a clear error if required columns are missing."""
@@ -260,11 +366,46 @@ def generate_features(
         for length in [int(x) for x in _as_seq(params["vhf"].get("length", 28))]:
             out[f"vhf_{length}"] = compute_vhf(out, period=int(length))
 
+    # Chande Volatility Index
+    if "cvi" in params:
+        _require_columns(out, ["close"], "CVI")
+        for length in [int(x) for x in _as_seq(params["cvi"].get("length", 10))]:
+            out[f"cvi_{length}"] = compute_cvi(out, period=int(length))
+
     # KAMA-based Volatility
     if "kama_volatility" in params:
         _require_columns(out, ["close"], "KAMA Volatility")
         for length in [int(x) for x in _as_seq(params["kama_volatility"].get("length", 10))]:
             out[f"kama_vol_{length}"] = compute_kama_volatility(out, close_col="close", period=int(length))
+
+    # SuperTrend
+    if "supertrend" in params:
+        # _require_columns checked inside compute_supertrend
+        lengths = [int(x) for x in _as_seq(params["supertrend"].get("length", 10))]
+        multipliers = [float(x) for x in _as_seq(params["supertrend"].get("multiplier", 2.0))]
+        
+        for length, mult in product(lengths, multipliers):
+            st_df = compute_supertrend(out, atr_len=length, multiplier=mult)
+            out[f"supertrend_{length}_{mult}"] = st_df["supertrend"]
+            out[f"supertrend_dir_{length}_{mult}"] = st_df["supertrend_dir"]
+
+    # StochRSI
+    if "stochrsi" in params:
+        _require_columns(out, ["close"], "StochRSI")
+        # We iterate over 'length' (stoch_len) and 'rsi_length' (rsi_len) and k, d
+        # Default params structure: {"length": [14], "rsi_length": [14], "k": [3], "d": [3]}
+        
+        stoch_lens = [int(x) for x in _as_seq(params["stochrsi"].get("length", 14))]
+        rsi_lens = [int(x) for x in _as_seq(params["stochrsi"].get("rsi_length", 14))]
+        ks = [int(x) for x in _as_seq(params["stochrsi"].get("k", 3))]
+        ds = [int(x) for x in _as_seq(params["stochrsi"].get("d", 3))]
+        
+        for sl, rl, k, d in product(stoch_lens, rsi_lens, ks, ds):
+            s_df = compute_stochrsi(out, rsi_len=rl, stoch_len=sl, k_len=k, d_len=d)
+            # suffix: _<stoch_len>_<rsi_len>_<k>_<d>
+            suffix = f"{sl}_{rl}_{k}_{d}"
+            out[f"stochrsi_k_{suffix}"] = s_df["stochrsi_k"]
+            out[f"stochrsi_d_{suffix}"] = s_df["stochrsi_d"]
 
     # optional anti-lookahead
     if shift:
