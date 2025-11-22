@@ -1,1 +1,1 @@
-# Quant-trading-Dual-Regime
+# Quant-trading-using-math
