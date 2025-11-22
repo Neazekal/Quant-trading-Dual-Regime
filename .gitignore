@@ -3,3 +3,5 @@ data/
 __pycache__/
 *.env
 *.docx
+*.pdf
+__init__.py
